@@ -1,0 +1,114 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+usage() {
+    local status="${1:-2}"
+    local output_fd=2
+    (( status == 0 )) && output_fd=1
+    echo "usage: slopmux-rm [-b|--delete-branch] NAME..." >&"$output_fd"
+    exit "$status"
+}
+
+delete_branch=false
+names=()
+while (( $# > 0 )); do
+    case "$1" in
+        -b | --delete-branch)
+            delete_branch=true
+            ;;
+        -h | --help)
+            usage 0
+            ;;
+        --)
+            shift
+            names+=("$@")
+            break
+            ;;
+        -*)
+            usage
+            ;;
+        *)
+            names+=("$1")
+            ;;
+    esac
+    shift
+done
+(( ${#names[@]} > 0 )) || usage
+
+git_common_dir="$(git rev-parse --path-format=absolute --git-common-dir)"
+repo="$(dirname "$git_common_dir")"
+reponame=$(basename "$repo")
+current_dir=$(pwd -P)
+status=0
+
+agent_name_for_worktree() {
+    git -C "$1" config --worktree --get slopmux.name 2>/dev/null || true
+}
+
+for name in "${names[@]}"; do
+    resolved_worktree=""
+    resolved_branch=""
+    ambiguous=false
+    worktree=""
+    branch=""
+    while IFS= read -r -d '' field; do
+        if [[ -z "$field" ]]; then
+            if [[ -n "$worktree" ]]; then
+                listed_name=$(agent_name_for_worktree "$worktree")
+                if [[ "$listed_name" == "$name" ]]; then
+                    if [[ -n "$resolved_worktree" ]]; then
+                        ambiguous=true
+                        break
+                    fi
+                    resolved_worktree="$worktree"
+                    resolved_branch="$branch"
+                fi
+            fi
+            worktree=""
+            branch=""
+        elif [[ "$field" == worktree\ * ]]; then
+            worktree="${field#worktree }"
+        elif [[ "$field" == branch\ refs/heads/* ]]; then
+            branch="${field#branch refs/heads/}"
+        fi
+    done < <(git -C "$repo" worktree list --porcelain -z)
+
+    if [[ "$ambiguous" == true ]]; then
+        echo "slopmux-rm: multiple agents named '$name' for $reponame" >&2
+        status=1
+        continue
+    fi
+
+    if [[ -z "$resolved_worktree" ]]; then
+        echo "slopmux-rm: no agent named '$name' for $reponame" >&2
+        status=1
+        continue
+    fi
+
+    resolved_canonical=$(realpath -m "$resolved_worktree")
+    case "$current_dir/" in
+        "$resolved_canonical/"*)
+            echo "slopmux-rm: cannot remove the worktree containing the current directory: $name" >&2
+            status=1
+            continue
+            ;;
+    esac
+
+    if ! git -C "$repo" worktree remove -- "$resolved_worktree"; then
+        status=1
+        continue
+    fi
+    echo "Removed agent worktree: $name"
+
+    if [[ "$delete_branch" == true ]]; then
+        if [[ -n "$resolved_branch" ]]; then
+            if ! git -C "$repo" branch -D -- "$resolved_branch"; then
+                status=1
+            fi
+        else
+            echo "slopmux-rm: '$name' was detached; there is no branch to delete" >&2
+        fi
+    fi
+done
+
+exit "$status"
