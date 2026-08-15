@@ -1,69 +1,51 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+SLOPMUX_COMMAND=slopmux-ls
+source "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/slopmux-common"
+
 usage() {
-    local status="${1:-2}"
-    local output_fd=2
-    (( status == 0 )) && output_fd=1
-    echo "usage: slopmux-ls" >&"$output_fd"
+    local status=${1:-2} fd=2
+    (( status == 0 )) && fd=1
+    echo "usage: slopmux-ls" >&"$fd"
     exit "$status"
 }
-
-if (( $# == 1 )) && [[ "$1" == "-h" || "$1" == "--help" ]]; then
-    usage 0
-fi
+if (( $# == 1 )) && [[ $1 == -h || $1 == --help ]]; then usage 0; fi
 (( $# == 0 )) || usage
 
-git_common_dir="$(git rev-parse --path-format=absolute --git-common-dir)"
-repo="$(dirname "$git_common_dir")"
-reponame=$(basename "$repo")
-
-found=false
-worktree=""
-branch=""
-head=""
-
-print_worktree() {
-    local agent agent_tool displayed_branch
-
-    [[ -n "$worktree" ]] || return 0
-    agent=$(git -C "$worktree" config --worktree --get slopmux.name \
-        2>/dev/null || true)
-    [[ -n "$agent" ]] || return 0
-    agent_tool=$(git -C "$worktree" config --worktree --get slopmux.tool \
-        2>/dev/null || true)
-
-    if [[ "$found" == false ]]; then
-        printf '%-24s  %-8s  %-32s  %s\n' \
-            "AGENT" "TOOL" "BRANCH" "WORKTREE"
-        found=true
-    fi
-
-    agent_tool="${agent_tool:--}"
-    if [[ -n "$branch" ]]; then
-        displayed_branch="$branch"
-    else
-        displayed_branch="(detached ${head:0:12})"
-    fi
-    printf '%-24s  %-8s  %-32s  %s\n' \
-        "$agent" "$agent_tool" "$displayed_branch" "$worktree"
-}
-
-while IFS= read -r -d '' field; do
-    if [[ -z "$field" ]]; then
-        print_worktree
-        worktree=""
-        branch=""
-        head=""
-    elif [[ "$field" == worktree\ * ]]; then
-        worktree="${field#worktree }"
-    elif [[ "$field" == branch\ refs/heads/* ]]; then
-        branch="${field#branch refs/heads/}"
-    elif [[ "$field" == HEAD\ * ]]; then
-        head="${field#HEAD }"
-    fi
-done < <(git -C "$repo" worktree list --porcelain -z)
-
-if [[ "$found" == false ]]; then
-    echo "No agents found for $reponame."
+slopmux_locate_parent
+slopmux_check_registry_version
+mapfile -t names < <(slopmux_registered_names | LC_ALL=C sort)
+if (( ${#names[@]} == 0 )); then
+    echo "No agents found for $SLOPMUX_REPOSITORY_NAME."
+    exit 0
 fi
+
+printf '%-24s  %-8s  %-12s  %-32s  %s\n' \
+    AGENT TOOL STATUS BRANCH CHECKOUT
+for name in "${names[@]}"; do
+    status=missing
+    checkout=-
+    branch=-
+    tool=-
+    if slopmux_read_record "$name"; then
+        checkout=$SLOPMUX_CHECKOUT
+        branch=$SLOPMUX_BRANCH
+        tool=${SLOPMUX_TOOL:--}
+        if slopmux_checkout_has_branch "$checkout" "$branch"; then
+            checkout_oid=$(git -C "$checkout" rev-parse "refs/heads/$branch")
+            if parent_oid=$(git -C "$SLOPMUX_PARENT" rev-parse --verify \
+                "refs/heads/$branch" 2>/dev/null); then
+                if [[ $checkout_oid == "$parent_oid" ]]; then
+                    status=ok
+                else
+                    status=different
+                fi
+            else
+                status=unpublished
+            fi
+        fi
+    fi
+    printf '%-24s  %-8s  %-12s  %-32s  %s\n' \
+        "$name" "$tool" "$status" "$branch" "$checkout"
+done

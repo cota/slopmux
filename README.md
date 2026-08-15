@@ -1,108 +1,98 @@
 # slopmux - the slop-generator multiplexer
 
-Command-line helpers for running slop generators (agents) in isolated Git
-worktrees and tmux windows. Agents can optionally be launched through a
-user-provided sandbox command.
+Slopmux creates small, independent Git checkouts for coding agents and opens
+them in tmux windows. Each agent repository has its own objects, refs, config,
+index, HEAD, and reflogs; it has no remote or alternate object store pointing
+back to the parent repository.
 
-Run these tools from a Git repo. `slopmux-new` creates the repo's agent
-worktrees, `slopmux-ls` lists them, and `slopmux-rm` removes them.
-
-## Requirements
-
-Git, tmux, and Bash.
-
-## Example
-
-Create two agent worktrees from the `example` repo's `main` branch, launching
-Codex in one and Claude in the other:
+Run the commands from a Git working tree:
 
 ```sh
-cd path/to/example
 slopmux-new foo main --tool codex
 slopmux-new bar main -t claude
-```
-
-Each agent opens in a new, named tmux window. The window section of the tmux
-status bar might then look like this:
-
-```text
-0:shell  1:[codex]foo  2:[claude]bar
-```
-
-List the agent worktrees for the current repository:
-
-```console
-$ slopmux-ls
-AGENT                     TOOL      BRANCH                            WORKTREE
-foo                       codex     slop/foo                          /home/alice/my-worktrees/example/foo
-bar                       claude    slop/bar                          /home/alice/my-worktrees/example/bar
-```
-
-Remove both worktrees when they are no longer needed:
-
-```sh
+slopmux-ls
+slopmux-sync foo bar
 slopmux-rm foo bar
 ```
 
-Pass `-b` or `--delete-branch` to remove their branches as well instead:
+`slopmux-new NAME [BASE_BRANCH]` creates the checkout and publishes its initial
+assigned branch in the parent. `slopmux-sync [NAME...]` explicitly publishes
+new commits. Publication is fast-forward-only: rebased, reset, amended, or
+otherwise divergent agent history is refused. With no names, `slopmux-sync`
+synchronizes every registered agent.
+
+`slopmux-ls` is observational and reports each agent as `ok`, `different`,
+`unpublished`, or `missing`. It never synchronizes anything.
+
+`slopmux-rm` performs a final synchronization before deleting a checkout. It
+refuses dirty checkouts, detached or unexpected HEADs, extra refs, missing
+repositories, and attempts made from inside the checkout. Ignored files are
+disposable. Use `-b` or `--delete-branch` to also delete the synchronized
+parent branch:
 
 ```sh
-slopmux-rm --delete-branch foo bar
+slopmux-rm --delete-branch foo
 ```
+
+## Requirements
+
+Git, tmux, Bash, and `flock`.
 
 ## Configuration
 
-Slopmux reads these settings from Git config:
+Slopmux reads these Git settings:
 
 - `slopmux.baseBranch` (default: `master`)
-- `slopmux.branchPrefix` (default: empty string)
-- `slopmux.worktreeRoot` (default: `~/.slopmux/worktrees`)
+- `slopmux.branchPrefix` (default: empty)
+- `slopmux.checkoutRoot` (default: `~/.slopmux/checkouts`)
 - `slopmux.sandboxCommand` (default: unset)
 
-The worktree root controls where new agents are created. Existing agents remain
-discoverable by their metadata if it changes.
-
-Slopmux stores that metadata as the worktree-specific `slopmux.name` and
-`slopmux.tool` Git config values.
-
-Settings can be global or specific to the current repository:
+Settings may be global or local to a parent repository:
 
 ```sh
-git config --global slopmux.worktreeRoot ~/my-worktrees
+git config --global slopmux.checkoutRoot ~/agent-checkouts
 git config slopmux.baseBranch main
 git config slopmux.branchPrefix slop/
 ```
 
+Changing `slopmux.checkoutRoot` affects only new agents. Existing agents remain
+discoverable through the registry in `.git/slopmux`. Checkout paths in that
+registry are absolute, so moving the parent directory also leaves existing
+agents usable.
+
+Checkout roots are partitioned by the parent's basename. A
+`.slopmux-parent` ownership file prevents two live parents with the same
+basename from sharing one root. If the recorded parent path no longer exists,
+Slopmux treats the repository as moved and updates the ownership file during
+the next agent creation.
+
 ### Sandbox configuration
 
-To use Bubblewrap, Firejail, or any other sandbox, provide an executable
-launcher and select it for the repository:
+For protection from an untrusted agent, configure a sandbox which exposes only
+the agent checkout read/write and hides the parent, registry, and sibling
+checkouts:
 
 ```sh
-git config --local slopmux.sandboxCommand /path/to/my-sandbox-launcher
+git config --local slopmux.sandboxCommand /absolute/path/to/launcher
 ```
 
-The configured executable receives the agent command as its arguments and is
-launched from the worktree. It owns the entire sandbox policy, including
-mounts, networking, environment variables, and shell initialization. The path
-must be absolute; Git expands a leading `~` when reading the setting. Note that
-keeping the launcher inside the repository is dangerous, because
-repository-controlled content could modify its own sandbox policy.
+The launcher receives the selected tool as its argument and starts from the
+agent checkout. It owns the complete sandbox policy, including mounts,
+networking, environment variables, and agent-specific safety flags. The path
+must be absolute (a leading `~` is expanded by Git), executable, and preferably
+outside repository-controlled content.
 
-The launcher is also responsible for any agent-specific arguments needed to
-change the agent's built-in protections; `slopmux-new` never adds such
-arguments.
-
-Use `-h` or `--help` with any command to print its usage.
+Without a sandbox, Git state is isolated but the checkout is not an operating
+system security boundary: a same-user process can still open other paths.
 
 ## Installation
 
 ```sh
 mkdir -p "$HOME/.local/bin"
-ln -s "$PWD/slopmux-new" "$PWD/slopmux-ls" "$PWD/slopmux-rm" \
-    "$HOME/.local/bin/"
+ln -s "$PWD/slopmux-new" "$PWD/slopmux-ls" "$PWD/slopmux-sync" \
+    "$PWD/slopmux-rm" "$HOME/.local/bin/"
 ```
 
-Run this from the Slopmux checkout and leave the checkout in place so the
-symlinks remain valid. Make sure `~/.local/bin` is in your `PATH`, then
-configure Git as described above.
+The commands resolve their shared helper through these symlinks, so leave the
+Slopmux checkout in place. Ensure `~/.local/bin` is in `PATH`. Use `-h` or
+`--help` with any command for usage.

@@ -1,137 +1,156 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+SLOPMUX_COMMAND=slopmux-new
+source "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/slopmux-common"
+
 usage() {
-    local status="${1:-2}"
-    local output_fd=2
-    (( status == 0 )) && output_fd=1
-    echo "usage: slopmux-new [-t|--tool TOOL] NAME [base_branch]" >&"$output_fd"
+    local status=${1:-2} fd=2
+    (( status == 0 )) && fd=1
+    echo "usage: slopmux-new [-t|--tool TOOL] NAME [BASE_BRANCH]" >&"$fd"
     exit "$status"
 }
 
-agent_tool=""
+agent_tool=
 tool_set=false
 positionals=()
-while (( $# > 0 )); do
-    case "$1" in
-        -h | --help) usage 0 ;;
-        -t | --tool)
+while (( $# )); do
+    case $1 in
+        -h|--help) usage 0 ;;
+        -t|--tool)
             (( $# >= 2 )) || usage
-            [[ "$tool_set" == false ]] || usage
-            agent_tool="$2"
+            [[ $tool_set == false ]] || usage
+            agent_tool=$2
             tool_set=true
             shift 2
             ;;
         --tool=*)
-            [[ "$tool_set" == false ]] || usage
-            agent_tool="${1#--tool=}"
+            [[ $tool_set == false ]] || usage
+            agent_tool=${1#--tool=}
             tool_set=true
             shift
             ;;
         -*) usage ;;
-        *)
-            positionals+=("$1")
-            shift
-            ;;
+        *) positionals+=("$1"); shift ;;
     esac
 done
-
 (( ${#positionals[@]} >= 1 && ${#positionals[@]} <= 2 )) || usage
-name="${positionals[0]}"
-base_branch="${positionals[1]:-}"
+name=${positionals[0]}
+base_branch=${positionals[1]:-}
+[[ $tool_set == false || -n $agent_tool ]] || usage
+[[ $agent_tool != *$'\n'* && $agent_tool != *$'\r'* ]] ||
+    slopmux_die "tool may not contain a newline"
 
-[[ "$tool_set" == false || -n "$agent_tool" ]] || usage
+slopmux_locate_parent
+slopmux_validate_name "$name" || slopmux_die "invalid agent name: $name"
 
-git_common_dir="$(git rev-parse --path-format=absolute --git-common-dir)"
-repo="$(dirname "$git_common_dir")"
-reponame=$(basename "$repo")
-configured_base_branch=$(git -C "$repo" config --get slopmux.baseBranch \
+configured_base=$(git -C "$SLOPMUX_PARENT" config --get slopmux.baseBranch \
     2>/dev/null || true)
-configured_branch_prefix=$(git -C "$repo" config --get slopmux.branchPrefix \
+branch_prefix=$(git -C "$SLOPMUX_PARENT" config --get slopmux.branchPrefix \
     2>/dev/null || true)
-worktree_root=$(git -C "$repo" config --type=path \
-    --get slopmux.worktreeRoot 2>/dev/null || true)
-sandbox_command=""
-if configured_sandbox_command=$(git -C "$repo" config --type=path \
-    --get slopmux.sandboxCommand 2>/dev/null)
-then
-    if [[ -z "$configured_sandbox_command" ]]; then
-        echo "slopmux-new: slopmux.sandboxCommand is empty" >&2
-        exit 1
-    fi
-    if [[ "$configured_sandbox_command" != /* ]]; then
-        echo "slopmux-new: slopmux.sandboxCommand must be an absolute path" >&2
-        exit 1
-    fi
-    if [[ ! -f "$configured_sandbox_command" ]]; then
-        echo "slopmux-new: sandbox command does not exist: $configured_sandbox_command" \
-            >&2
-        exit 1
-    fi
-    if [[ ! -x "$configured_sandbox_command" ]]; then
-        echo "slopmux-new: sandbox command is not executable: $configured_sandbox_command" \
-            >&2
-        exit 1
-    fi
-    sandbox_command="$configured_sandbox_command"
+checkout_root=$(git -C "$SLOPMUX_PARENT" config --type=path \
+    --get slopmux.checkoutRoot 2>/dev/null || true)
+base_branch=${base_branch:-${configured_base:-master}}
+branch=$branch_prefix$name
+checkout_root=${checkout_root:-$HOME/.slopmux/checkouts}
+
+slopmux_validate_branch "$branch" ||
+    slopmux_die "invalid assigned branch: $branch"
+slopmux_validate_branch "$base_branch" ||
+    slopmux_die "invalid base branch: $base_branch"
+git -C "$SLOPMUX_PARENT" show-ref --verify --quiet \
+    "refs/heads/$base_branch" || slopmux_die "base branch does not exist: $base_branch"
+
+sandbox_command=
+if configured_sandbox=$(git -C "$SLOPMUX_PARENT" config --type=path \
+    --get slopmux.sandboxCommand 2>/dev/null); then
+    [[ -n $configured_sandbox ]] || slopmux_die "slopmux.sandboxCommand is empty"
+    [[ $configured_sandbox == /* ]] ||
+        slopmux_die "slopmux.sandboxCommand must be an absolute path"
+    [[ -f $configured_sandbox ]] ||
+        slopmux_die "sandbox command does not exist: $configured_sandbox"
+    [[ -x $configured_sandbox ]] ||
+        slopmux_die "sandbox command is not executable: $configured_sandbox"
+    sandbox_command=$configured_sandbox
 else
-    status=$?
-    # git config exits with 1 when the setting does not exist. In that case,
-    # launch the agent directly; other failures are actual configuration errors.
-    if (( status != 1 )); then
-        echo "slopmux-new: could not read slopmux.sandboxCommand" >&2
-        exit 1
+    config_status=$?
+    (( config_status == 1 )) ||
+        slopmux_die "could not read slopmux.sandboxCommand"
+fi
+
+slopmux_prepare_registry
+
+mkdir -p -- "$checkout_root/$SLOPMUX_REPOSITORY_NAME"
+checkout_directory=$(cd "$checkout_root/$SLOPMUX_REPOSITORY_NAME" && pwd -P)
+exec {basename_lock_fd}>"$checkout_directory/.slopmux-lock"
+flock -x "$basename_lock_fd"
+ownership_file=$checkout_directory/.slopmux-parent
+if [[ -e $ownership_file ]]; then
+    recorded_parent=$(<"$ownership_file")
+    if [[ $recorded_parent != "$SLOPMUX_PARENT" ]]; then
+        if [[ -e $recorded_parent ]]; then
+            slopmux_die "checkout basename '$SLOPMUX_REPOSITORY_NAME' belongs to $recorded_parent"
+        fi
+        slopmux_atomic_write "$ownership_file" "$SLOPMUX_PARENT"
     fi
+else
+    slopmux_atomic_write "$ownership_file" "$SLOPMUX_PARENT"
 fi
 
-base_branch="${base_branch:-${configured_base_branch:-master}}"
-branch_prefix="$configured_branch_prefix"
-worktree_root="${worktree_root:-$HOME/.slopmux/worktrees}"
-worktree_dir="$worktree_root/$reponame"
-window_label="slop"
-if [[ -n "$agent_tool" ]]; then
-    window_label="$agent_tool"
-fi
-worktree="$worktree_dir/$name"
-branch="$branch_prefix$name"
+record=$SLOPMUX_AGENTS/$name
+checkout=$checkout_directory/$name
+[[ ! -e $record && ! -L $record ]] || slopmux_die "agent already exists: $name"
+[[ ! -e $checkout && ! -L $checkout ]] ||
+    slopmux_die "unregistered checkout already exists; inspect it manually: $checkout"
+git -C "$SLOPMUX_PARENT" show-ref --verify --quiet "refs/heads/$branch" &&
+    slopmux_die "parent branch already exists: $branch"
+for registered_name in $(slopmux_registered_names); do
+    if slopmux_read_record "$registered_name" && [[ $SLOPMUX_BRANCH == "$branch" ]]; then
+        slopmux_die "assigned branch is already registered to agent '$registered_name': $branch"
+    fi
+done
 
-mkdir -p "$worktree_dir"
-git -C "$repo" worktree add -b "$branch" "$worktree" "$base_branch"
-
-git -C "$repo" config extensions.worktreeConfig true
-git -C "$worktree" config --worktree slopmux.name "$name"
-if [[ -n "$agent_tool" ]]; then
-    git -C "$worktree" config --worktree slopmux.tool "$agent_tool"
-fi
-
-startup_file=$(mktemp "${TMPDIR:-/tmp}/slopmux-new.XXXXXX")
-cleanup() {
-    rm -f -- "$startup_file"
+temporary=$(mktemp -d "$checkout_directory/.${name}.tmp.XXXXXX")
+installed=false
+cleanup_checkout() {
+    if [[ $installed == false ]]; then
+        rm -rf -- "$temporary"
+    fi
 }
-trap cleanup EXIT
+trap cleanup_checkout EXIT
 
+git init -q -b "$branch" "$temporary"
+git -C "$temporary" fetch --no-tags "$SLOPMUX_PARENT" \
+    "refs/heads/$base_branch"
+git -C "$temporary" reset --hard FETCH_HEAD
+mv -- "$temporary" "$checkout"
+installed=true
+slopmux_write_record "$name" "$checkout" "$branch" "$agent_tool"
+
+if ! slopmux_sync_one "$name"; then
+    slopmux_die "checkout was created and registered, but initial publication failed"
+fi
+
+flock -u "$basename_lock_fd"
+flock -u "$SLOPMUX_REGISTRY_FD"
+
+window_label=${agent_tool:-slop}
+startup_file=$(mktemp "${TMPDIR:-/tmp}/slopmux-new.XXXXXX")
+cleanup_startup() { rm -f -- "$startup_file"; }
+trap cleanup_startup EXIT
 {
     printf 'source %q\n' "$HOME/.bashrc"
     printf 'rm -f -- %q\n' "$startup_file"
-    if [[ -n "$sandbox_command" ]]; then
+    if [[ -n $sandbox_command ]]; then
         printf 'exec %q' "$sandbox_command"
-        if [[ -n "$agent_tool" ]]; then
-            printf ' %q' "$agent_tool"
-        fi
+        [[ -z $agent_tool ]] || printf ' %q' "$agent_tool"
         printf '\n'
-    elif [[ -n "$agent_tool" ]]; then
+    elif [[ -n $agent_tool ]]; then
         printf 'exec %q\n' "$agent_tool"
     fi
 } >"$startup_file"
-
 printf -v shell_command 'exec bash --rcfile %q -i' "$startup_file"
-if ! tmux new-window \
-    -n "[$window_label]$name" \
-    -c "$worktree" \
-    "$shell_command"
-then
-    exit 1
+if ! tmux new-window -n "[$window_label]$name" -c "$checkout" "$shell_command"; then
+    slopmux_die "checkout was created and registered, but tmux launch failed"
 fi
-
-# The new bash removes its startup file after opening it.
 trap - EXIT

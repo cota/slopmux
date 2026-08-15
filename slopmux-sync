@@ -1,0 +1,41 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+SLOPMUX_COMMAND=slopmux-sync
+source "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/slopmux-common"
+
+usage() {
+    local status=${1:-2} fd=2
+    (( status == 0 )) && fd=1
+    echo "usage: slopmux-sync [NAME...]" >&"$fd"
+    exit "$status"
+}
+names=()
+while (( $# )); do
+    case $1 in
+        -h|--help) usage 0 ;;
+        --) shift; names+=("$@"); break ;;
+        -*) usage ;;
+        *) names+=("$1") ;;
+    esac
+    shift
+done
+
+slopmux_locate_parent
+slopmux_prepare_registry
+if (( ${#names[@]} == 0 )); then
+    mapfile -t names < <(slopmux_registered_names | LC_ALL=C sort)
+fi
+
+result=0
+for name in "${names[@]}"; do
+    if ! slopmux_validate_name "$name"; then
+        echo "slopmux-sync: invalid agent name: $name" >&2
+        result=1
+    elif ! slopmux_sync_one "$name"; then
+        result=1
+    else
+        echo "Synchronized agent: $name"
+    fi
+done
+exit "$result"

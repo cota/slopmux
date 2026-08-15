@@ -1,0 +1,125 @@
+#!/usr/bin/env bash
+
+# Shared implementation for the slopmux commands.  Callers enable strict mode.
+
+slopmux_die() {
+    printf '%s: %s\n' "${SLOPMUX_COMMAND:-slopmux}" "$*" >&2
+    exit 1
+}
+
+slopmux_locate_parent() {
+    local top git_dir
+
+    top=$(git rev-parse --show-toplevel 2>/dev/null) ||
+        slopmux_die "not inside a Git working tree"
+    git_dir=$(git rev-parse --absolute-git-dir 2>/dev/null) ||
+        slopmux_die "could not locate the Git directory"
+    SLOPMUX_PARENT=$(cd "$top" && pwd -P)
+    SLOPMUX_GIT_DIR=$(cd "$git_dir" && pwd -P)
+    SLOPMUX_REPOSITORY_NAME=${SLOPMUX_PARENT##*/}
+    SLOPMUX_REGISTRY=$SLOPMUX_GIT_DIR/slopmux
+    SLOPMUX_AGENTS=$SLOPMUX_REGISTRY/agents
+}
+
+slopmux_validate_name() {
+    [[ "$1" =~ ^[A-Za-z0-9][A-Za-z0-9._-]*$ ]]
+}
+
+slopmux_validate_branch() {
+    git check-ref-format --branch "$1" >/dev/null 2>&1
+}
+
+slopmux_prepare_registry() {
+    mkdir -p -- "$SLOPMUX_REGISTRY"
+    exec {SLOPMUX_REGISTRY_FD}>"$SLOPMUX_REGISTRY/lock"
+    flock -x "$SLOPMUX_REGISTRY_FD"
+    mkdir -p -- "$SLOPMUX_AGENTS"
+
+    if [[ -e "$SLOPMUX_REGISTRY/version" ]]; then
+        [[ "$(<"$SLOPMUX_REGISTRY/version")" == 1 ]] ||
+            slopmux_die "unsupported registry version"
+    else
+        slopmux_atomic_write "$SLOPMUX_REGISTRY/version" 1
+    fi
+}
+
+slopmux_check_registry_version() {
+    [[ ! -e "$SLOPMUX_REGISTRY/version" ]] ||
+        [[ "$(<"$SLOPMUX_REGISTRY/version")" == 1 ]] ||
+        slopmux_die "unsupported registry version"
+}
+
+slopmux_atomic_write() {
+    local target=$1 value=$2 temporary
+
+    temporary=$(mktemp "${target}.tmp.XXXXXX")
+    printf '%s\n' "$value" >"$temporary"
+    mv -f -- "$temporary" "$target"
+}
+
+slopmux_read_record() {
+    local name=$1 record=$SLOPMUX_AGENTS/$1
+
+    [[ -d "$record" && -f "$record/checkout" && -f "$record/branch" &&
+        -f "$record/tool" ]] || return 1
+    SLOPMUX_CHECKOUT=$(<"$record/checkout")
+    SLOPMUX_BRANCH=$(<"$record/branch")
+    SLOPMUX_TOOL=$(<"$record/tool")
+    [[ "$SLOPMUX_CHECKOUT" == /* && -n "$SLOPMUX_BRANCH" ]] || return 1
+}
+
+slopmux_write_record() {
+    local name=$1 checkout=$2 branch=$3 tool=$4 temporary final
+
+    final=$SLOPMUX_AGENTS/$name
+    temporary=$(mktemp -d "$SLOPMUX_AGENTS/.${name}.tmp.XXXXXX")
+    slopmux_atomic_write "$temporary/checkout" "$checkout"
+    slopmux_atomic_write "$temporary/branch" "$branch"
+    slopmux_atomic_write "$temporary/tool" "$tool"
+    mv -- "$temporary" "$final"
+}
+
+slopmux_checkout_has_branch() {
+    local checkout=$1 branch=$2 top git_dir
+
+    [[ -d "$checkout" && -d "$checkout/.git" ]] || return 1
+    top=$(git -C "$checkout" rev-parse --show-toplevel 2>/dev/null) || return 1
+    git_dir=$(git -C "$checkout" rev-parse --absolute-git-dir 2>/dev/null) ||
+        return 1
+    [[ "$(cd "$top" && pwd -P)" == "$checkout" ]] || return 1
+    [[ "$(cd "$git_dir" && pwd -P)" == "$checkout/.git" ]] || return 1
+    git -C "$checkout" show-ref --verify --quiet "refs/heads/$branch"
+}
+
+slopmux_sync_one() {
+    local name=$1
+
+    if ! slopmux_read_record "$name"; then
+        printf '%s: no valid agent named %q for %s\n' \
+            "$SLOPMUX_COMMAND" "$name" "$SLOPMUX_REPOSITORY_NAME" >&2
+        return 1
+    fi
+    if ! slopmux_checkout_has_branch "$SLOPMUX_CHECKOUT" "$SLOPMUX_BRANCH"; then
+        printf '%s: agent %q is missing its checkout or assigned branch\n' \
+            "$SLOPMUX_COMMAND" "$name" >&2
+        return 1
+    fi
+    if ! git -C "$SLOPMUX_PARENT" fetch --no-tags --no-write-fetch-head \
+        "$SLOPMUX_CHECKOUT" \
+        "refs/heads/$SLOPMUX_BRANCH:refs/heads/$SLOPMUX_BRANCH"
+    then
+        printf '%s: could not fast-forward agent %q\n' \
+            "$SLOPMUX_COMMAND" "$name" >&2
+        return 1
+    fi
+}
+
+slopmux_registered_names() {
+    local record
+
+    [[ -d "$SLOPMUX_AGENTS" ]] || return 0
+    for record in "$SLOPMUX_AGENTS"/*; do
+        [[ -d "$record" && "${record##*/}" != .* ]] || continue
+        printf '%s\n' "${record##*/}"
+    done
+}
