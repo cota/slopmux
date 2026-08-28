@@ -92,7 +92,8 @@ slopmux_checkout_has_branch() {
 }
 
 slopmux_sync_one() {
-    local name=$1
+    local name=$1 force=${2:-false}
+    local -a fetch_options=()
 
     if ! slopmux_read_record "$name"; then
         printf '%s: no valid agent named %q for %s\n' \
@@ -104,12 +105,19 @@ slopmux_sync_one() {
             "$SLOPMUX_COMMAND" "$name" >&2
         return 1
     fi
-    if ! git -C "$SLOPMUX_PARENT" fetch --no-tags --no-write-fetch-head \
+    [[ $force == true ]] && fetch_options+=(--force)
+    if ! git -C "$SLOPMUX_PARENT" fetch "${fetch_options[@]}" \
+        --no-tags --no-write-fetch-head \
         "$SLOPMUX_CHECKOUT" \
         "refs/heads/$SLOPMUX_BRANCH:refs/heads/$SLOPMUX_BRANCH"
     then
-        printf '%s: could not fast-forward agent %q\n' \
-            "$SLOPMUX_COMMAND" "$name" >&2
+        if [[ $force == true ]]; then
+            printf '%s: could not force-update agent %q\n' \
+                "$SLOPMUX_COMMAND" "$name" >&2
+        else
+            printf '%s: could not fast-forward agent %q\n' \
+                "$SLOPMUX_COMMAND" "$name" >&2
+        fi
         return 1
     fi
 }

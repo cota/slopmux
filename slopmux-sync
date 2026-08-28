@@ -7,12 +7,14 @@ source "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/slopmux-common"
 usage() {
     local status=${1:-2} fd=2
     (( status == 0 )) && fd=1
-    echo "usage: slopmux-sync [NAME...]" >&"$fd"
+    echo "usage: slopmux-sync [-f|--force] [NAME...]" >&"$fd"
     exit "$status"
 }
+force=false
 names=()
 while (( $# )); do
     case $1 in
+        -f|--force) force=true ;;
         -h|--help) usage 0 ;;
         --) shift; names+=("$@"); break ;;
         -*) usage ;;
@@ -32,7 +34,7 @@ for name in "${names[@]}"; do
     if ! slopmux_validate_name "$name"; then
         echo "slopmux-sync: invalid agent name: $name" >&2
         result=1
-    elif ! slopmux_sync_one "$name"; then
+    elif ! slopmux_sync_one "$name" "$force"; then
         result=1
     else
         echo "Synchronized agent: $name"

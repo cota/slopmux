@@ -17,9 +17,16 @@ slopmux-rm foo bar
 
 `slopmux-new NAME [BASE_BRANCH]` creates the checkout and publishes its initial
 assigned branch in the parent. `slopmux-sync [NAME...]` explicitly publishes
-new commits. Publication is fast-forward-only: rebased, reset, amended, or
-otherwise divergent agent history is refused. With no names, `slopmux-sync`
-synchronizes every registered agent.
+new commits. Publication is fast-forward-only by default: rebased, reset,
+amended, or otherwise divergent agent history is refused. Use `-f` or
+`--force` to replace the parent branches with their agents' rewritten history:
+
+```sh
+slopmux-sync --force foo bar
+```
+
+With no names, `slopmux-sync` synchronizes every registered agent, and
+`slopmux-sync --force` force-updates every registered agent branch.
 
 `slopmux-ls` is observational and reports each agent as `ok`, `different`,
 `unpublished`, or `missing`. It never synchronizes anything.

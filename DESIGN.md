@@ -10,8 +10,8 @@ publishes its assigned branch into the parent. User-facing behavior is in
 - It has no alternates or persistent remote pointing to slopmux state.
 - The parent registry is authoritative; checkout metadata and root scans are
   not used for discovery.
-- The checkout branch is authoritative. Its parent branch is only a published,
-  fast-forward-only copy.
+- The checkout branch is authoritative. Its parent branch is only a published
+  copy, updated by fast-forward unless the user explicitly requests force.
 - Failed or interrupted operations prefer visible stale state over forgotten or
   destroyed work.
 
@@ -51,9 +51,10 @@ registers it. The initial branch is published before tmux starts. A launch
 failure leaves the valid checkout registered.
 
 Publication fetches exactly the assigned checkout branch into its matching
-parent branch without force. Git permits creation and fast-forwards while
-refusing divergence and checked-out destinations. Rewritten history must be
-reconciled manually.
+parent branch. By default, Git permits creation and fast-forwards while
+refusing divergence and checked-out destinations. `slopmux-sync --force`
+allows non-fast-forward updates; creation and removal still publish without
+force.
 
 Removal requires a valid repository on its assigned branch, a clean working
 tree, no extra refs, a caller outside the checkout, and a successful final
@@ -62,7 +63,7 @@ record. `--delete-branch` uses the synchronized OID as the expected old value.
 
 ## Deliberate limits
 
-Version 1 has no object cache, alternates, automatic or forced publication,
+Version 1 has no object cache, alternates, automatic publication,
 linked-worktree migration, or special handling for LFS, submodules, shallow
 clones, and partial clones. These features are deferred to keep the design
 simple.

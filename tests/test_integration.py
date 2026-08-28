@@ -203,6 +203,26 @@ class SlopmuxIntegrationTests(unittest.TestCase):
             self.git("rev-parse", "refs/heads/foo").stdout.strip(), parent_tip
         )
 
+    def test_force_sync_replaces_divergent_parent_branch(self):
+        self.new("foo")
+        foo = self.checkout("foo")
+        agent_tip = self.commit_file(foo, "agent-only", "agent\n")
+        parent_tip = self.commit_file(self.parent, "parent-only", "parent\n")
+        self.git("update-ref", "refs/heads/foo", parent_tip)
+
+        refused = self.slopmux("sync", "foo")
+        self.assertNotEqual(refused.returncode, 0)
+        self.assertIn("could not fast-forward", refused.stderr)
+        self.assertEqual(
+            self.git("rev-parse", "refs/heads/foo").stdout.strip(), parent_tip
+        )
+
+        forced = self.slopmux("sync", "--force", "foo", check=True)
+        self.assertIn("Synchronized agent: foo", forced.stdout)
+        self.assertEqual(
+            self.git("rev-parse", "refs/heads/foo").stdout.strip(), agent_tip
+        )
+
     def test_basename_clash_move_and_checkout_root_change(self):
         self.new("old")
         old_checkout = self.checkout("old")
