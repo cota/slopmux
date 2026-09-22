@@ -16,17 +16,10 @@ slopmux-rm foo bar
 ```
 
 `slopmux-new NAME [BASE_BRANCH]` creates the checkout and publishes its initial
-assigned branch in the parent. `slopmux-sync [NAME...]` explicitly publishes
-new commits. Publication is fast-forward-only by default: rebased, reset,
-amended, or otherwise divergent agent history is refused. Use `-f` or
-`--force` to replace the parent branches with their agents' rewritten history:
-
-```sh
-slopmux-sync --force foo bar
-```
-
-With no names, `slopmux-sync` synchronizes every registered agent, and
-`slopmux-sync --force` force-updates every registered agent branch.
+assigned branch in the parent. `slopmux-sync [--force] [NAME...]` explicitly
+publishes new commits, or synchronizes every registered agent when no names are
+given. Publication is fast-forward-only by default; `--force` replaces parent
+branches with rewritten agent history.
 
 `slopmux-ls` is observational and reports each agent as `ok`, `different`,
 `unpublished`, or `missing`. It never synchronizes anything.
@@ -34,15 +27,11 @@ With no names, `slopmux-sync` synchronizes every registered agent, and
 `slopmux-rm` deletes a checkout only when its assigned branch exactly matches
 the parent branch. It does not synchronize implicitly. It also refuses dirty
 checkouts, detached or unexpected HEADs, refs that are not identically mirrored
-in the parent, missing repositories, and attempts made from inside the
-checkout. Ignored files and refs with the same name and object ID in the parent
-are disposable.
+in the parent, missing repositories, and attempts made from inside the checkout.
 
-Use `-f` or `--force` to remove a checkout without synchronizing it or checking
-any of its branches, refs, HEAD, index, or working-tree changes. Force removal
-never creates or updates the parent branch. Use `-b` or `--delete-branch` to
-also delete the parent branch; removal refuses if that branch is checked out in
-any parent worktree:
+Use `-f` or `--force` to skip all Git-state checks and remove a checkout without
+publishing. Use `-b` or `--delete-branch` to also delete the parent branch;
+removal refuses if that branch is checked out in any parent worktree:
 
 ```sh
 slopmux-rm --delete-branch foo
@@ -79,7 +68,8 @@ Checkout roots are partitioned by the parent's basename. A
 `.slopmux-parent` ownership file prevents two live parents with the same
 basename from sharing one root. If the recorded parent path no longer exists,
 Slopmux treats the repository as moved and updates the ownership file during
-the next agent creation.
+the next agent creation. Copying a parent with active slopmux metadata is
+unsupported.
 
 ### Sandbox configuration
 
@@ -91,11 +81,10 @@ checkouts:
 git config --local slopmux.sandboxCommand /absolute/path/to/launcher
 ```
 
-The launcher receives the selected tool as its argument and starts from the
-agent checkout. It owns the complete sandbox policy, including mounts,
-networking, environment variables, and agent-specific safety flags. The path
-must be absolute (a leading `~` is expanded by Git), executable, and preferably
-outside repository-controlled content.
+The launcher receives the selected tool as its argument, starts from the agent
+checkout, and owns the complete sandbox policy. Its path must be absolute (a
+leading `~` is expanded by Git), executable, and preferably outside
+repository-controlled content.
 
 Without a sandbox, Git state is isolated but the checkout is not an operating
 system security boundary: a same-user process can still open other paths.
@@ -116,8 +105,6 @@ Slopmux checkout in place. Ensure `~/.local/bin` is in `PATH`. Use `-h` or
 
 ### Invariants
 
-- A checkout owns its objects, refs, config, index, HEAD, and reflogs.
-- It has no alternates or persistent remote pointing to slopmux state.
 - The parent registry is authoritative; checkout metadata and root scans are
   not used for discovery.
 - The checkout branch is authoritative. Its parent branch is only a published
@@ -140,17 +127,7 @@ parent/.git/slopmux/
 └── <agent>/.git/
 ```
 
-The ownership file stores the parent's canonical path. A different live path
-is a basename collision and is refused; a missing old path is treated as a
-move. Copying a parent with active slopmux metadata is unsupported.
-
-Mutations hold the parent registry `flock`; creation also holds the basename
-lock. Records and ownership files are installed through temporary-file renames.
-Missing checkouts remain registered and visible.
-
 ### Deliberate limits
 
-Version 1 has no object cache, alternates, automatic publication,
-linked-worktree migration, or special handling for LFS, submodules, shallow
-clones, and partial clones. These features are deferred to keep the design
-simple.
+Slopmux has no special handling for LFS, submodules, shallow clones, or partial
+clones.
