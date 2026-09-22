@@ -309,6 +309,7 @@ class SlopmuxIntegrationTests(unittest.TestCase):
         self.new("foo")
         foo = self.checkout("foo")
         child_oid = self.commit_file(foo, "child", "child\n")
+        self.slopmux("sync", "foo", check=True)
         self.git("tag", "same-name", cwd=self.parent)
         self.git("update-ref", "refs/tags/same-name", child_oid, cwd=foo)
 
@@ -316,6 +317,82 @@ class SlopmuxIntegrationTests(unittest.TestCase):
 
         self.assertNotEqual(result.returncode, 0)
         self.assertIn("refs/tags/same-name", result.stderr)
+        self.assertTrue(foo.exists())
+        self.assertTrue((self.parent / ".git/slopmux/agents/foo").exists())
+
+    def test_removal_requires_exact_synchronization_without_publishing(self):
+        self.new("foo")
+        foo = self.checkout("foo")
+        self.commit_file(foo, "child", "child\n")
+        parent_oid = self.git("rev-parse", "refs/heads/foo").stdout.strip()
+
+        result = self.slopmux("rm", "foo")
+
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("not synchronized", result.stderr)
+        self.assertEqual(
+            self.git("rev-parse", "refs/heads/foo").stdout.strip(), parent_oid
+        )
+        self.assertTrue(foo.exists())
+        self.assertTrue((self.parent / ".git/slopmux/agents/foo").exists())
+
+        self.git("update-ref", "-d", "refs/heads/foo")
+        missing = self.slopmux("rm", "foo")
+        self.assertNotEqual(missing.returncode, 0)
+        self.assertIn("no synchronized parent branch", missing.stderr)
+        self.assertTrue(foo.exists())
+        self.assertTrue((self.parent / ".git/slopmux/agents/foo").exists())
+
+    def test_force_removal_discards_checkout_state_and_preserves_parent(self):
+        self.new("foo")
+        foo = self.checkout("foo")
+        child_oid = self.commit_file(foo, "child", "child\n")
+        parent_oid = self.commit_file(self.parent, "parent", "parent\n")
+        self.git("update-ref", "refs/heads/foo", parent_oid)
+        self.git("update-ref", "refs/jj/keep/test", child_oid, cwd=foo)
+        self.git("checkout", "-q", "-b", "other", cwd=foo)
+        (foo / "child").write_text("modified\n")
+        (foo / "staged").write_text("staged\n")
+        self.git("add", "staged", cwd=foo)
+        (foo / "untracked").write_text("untracked\n")
+
+        result = self.slopmux("rm", "--force", "foo")
+
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(
+            self.git("rev-parse", "refs/heads/foo").stdout.strip(), parent_oid
+        )
+        self.assertFalse(foo.exists())
+        self.assertFalse((self.parent / ".git/slopmux/agents/foo").exists())
+
+    def test_force_removal_with_delete_branch_deletes_observed_parent(self):
+        self.new("foo")
+        foo = self.checkout("foo")
+        self.commit_file(foo, "child", "child\n")
+
+        result = self.slopmux("rm", "-f", "-b", "foo")
+
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertNotEqual(
+            self.git("show-ref", "--verify", "refs/heads/foo",
+                     check=False).returncode,
+            0,
+        )
+        self.assertFalse(foo.exists())
+        self.assertFalse((self.parent / ".git/slopmux/agents/foo").exists())
+
+    def test_delete_branch_refuses_branch_checked_out_in_parent(self):
+        self.new("foo")
+        foo = self.checkout("foo")
+        self.git("checkout", "-q", "foo")
+
+        result = self.slopmux("rm", "-f", "-b", "foo")
+
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("checked out in a worktree", result.stderr)
+        self.assertTrue(
+            self.git("show-ref", "--verify", "refs/heads/foo").returncode == 0
+        )
         self.assertTrue(foo.exists())
         self.assertTrue((self.parent / ".git/slopmux/agents/foo").exists())
 
@@ -328,6 +405,11 @@ class SlopmuxIntegrationTests(unittest.TestCase):
         result = self.slopmux("rm", "foo", cwd=foo, env=environment)
         self.assertNotEqual(result.returncode, 0)
         self.assertIn("current directory", result.stderr)
+        self.assertTrue(foo.exists())
+
+        forced = self.slopmux("rm", "--force", "foo", cwd=foo, env=environment)
+        self.assertNotEqual(forced.returncode, 0)
+        self.assertIn("current directory", forced.stderr)
         self.assertTrue(foo.exists())
 
     def test_tmux_failure_keeps_registered_checkout(self):
@@ -405,6 +487,7 @@ class SlopmuxIntegrationTests(unittest.TestCase):
         self.new("foo")
         foo = self.checkout("foo")
         self.commit_file(foo, "agent", "agent\n")
+        self.slopmux("sync", "foo", check=True)
         race_environment = self.env.copy()
         race_environment.update(
             GIT_AUTHOR_NAME="Test",

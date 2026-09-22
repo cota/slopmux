@@ -7,14 +7,16 @@ source "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/slopmux-common"
 usage() {
     local status=${1:-2} fd=2
     (( status == 0 )) && fd=1
-    echo "usage: slopmux-rm [-b|--delete-branch] NAME..." >&"$fd"
+    echo "usage: slopmux-rm [-f|--force] [-b|--delete-branch] NAME..." >&"$fd"
     exit "$status"
 }
 delete_branch=false
+force=false
 names=()
 while (( $# )); do
     case $1 in
         -b|--delete-branch) delete_branch=true ;;
+        -f|--force) force=true ;;
         -h|--help) usage 0 ;;
         --) shift; names+=("$@"); break ;;
         -*) usage ;;
@@ -45,59 +47,103 @@ for name in "${names[@]}"; do
             continue
             ;;
     esac
-    if ! slopmux_checkout_has_branch "$checkout" "$branch"; then
-        echo "slopmux-rm: agent '$name' is missing its checkout or assigned branch" >&2
-        result=1
-        continue
-    fi
-    if ! head_branch=$(git -C "$checkout" symbolic-ref --quiet --short HEAD); then
-        echo "slopmux-rm: agent '$name' has a detached HEAD" >&2
-        result=1
-        continue
-    fi
-    if [[ $head_branch != "$branch" ]]; then
-        echo "slopmux-rm: agent '$name' has HEAD on '$head_branch', not '$branch'" >&2
-        result=1
-        continue
-    fi
-    if [[ -n $(git -C "$checkout" status --porcelain --untracked-files=all) ]]; then
-        echo "slopmux-rm: agent '$name' has tracked, staged, or untracked changes" >&2
+    if ! slopmux_checkout_is_repository "$checkout"; then
+        echo "slopmux-rm: agent '$name' is missing its checkout or repository" >&2
         result=1
         continue
     fi
     expected_ref=refs/heads/$branch
-    parent_refs=$(git -C "$SLOPMUX_PARENT" for-each-ref \
-        --format='%(objectname) %(refname)')
-    extra_refs=$(git -C "$checkout" for-each-ref \
-        --format='%(objectname) %(refname)' | while read -r oid ref; do
-        [[ $ref == "$expected_ref" ]] && continue
-        mirrored=false
-        while read -r parent_oid parent_ref; do
-            if [[ $ref == "$parent_ref" && $oid == "$parent_oid" ]]; then
-                mirrored=true
-                break
-            fi
-        done <<<"$parent_refs"
-        [[ $mirrored == true ]] || echo "$ref"
-    done)
-    if [[ -n $extra_refs ]]; then
-        echo "slopmux-rm: agent '$name' has additional refs not mirrored in the parent:" >&2
-        printf '%s\n' "$extra_refs" >&2
-        result=1
-        continue
-    fi
-
-    if ! slopmux_sync_one "$name"; then
-        result=1
-        continue
-    fi
-    synchronized_oid=$(git -C "$checkout" rev-parse "$expected_ref")
-    if [[ $delete_branch == true ]]; then
-        if ! git -C "$SLOPMUX_PARENT" update-ref -d "$expected_ref" \
-            "$synchronized_oid"; then
-            echo "slopmux-rm: parent branch changed while removing agent '$name'" >&2
+    parent_oid=
+    if [[ $force == false ]]; then
+        if ! checkout_oid=$(git -C "$checkout" show-ref --verify --hash \
+            "$expected_ref"); then
+            echo "slopmux-rm: agent '$name' is missing its assigned branch" >&2
             result=1
             continue
+        fi
+        if ! parent_oid=$(git -C "$SLOPMUX_PARENT" show-ref --verify --hash \
+            "$expected_ref"); then
+            echo "slopmux-rm: agent '$name' has no synchronized parent branch" >&2
+            result=1
+            continue
+        fi
+        if [[ $checkout_oid != "$parent_oid" ]]; then
+            echo "slopmux-rm: agent '$name' is not synchronized with the parent" >&2
+            result=1
+            continue
+        fi
+        if ! head_branch=$(git -C "$checkout" symbolic-ref --quiet --short HEAD); then
+            echo "slopmux-rm: agent '$name' has a detached HEAD" >&2
+            result=1
+            continue
+        fi
+        if [[ $head_branch != "$branch" ]]; then
+            echo "slopmux-rm: agent '$name' has HEAD on '$head_branch', not '$branch'" >&2
+            result=1
+            continue
+        fi
+        if [[ -n $(git -C "$checkout" status --porcelain --untracked-files=all) ]]; then
+            echo "slopmux-rm: agent '$name' has tracked, staged, or untracked changes" >&2
+            result=1
+            continue
+        fi
+        parent_refs=$(git -C "$SLOPMUX_PARENT" for-each-ref \
+            --format='%(objectname) %(refname)')
+        extra_refs=$(git -C "$checkout" for-each-ref \
+            --format='%(objectname) %(refname)' | while read -r oid ref; do
+            [[ $ref == "$expected_ref" ]] && continue
+            mirrored=false
+            while read -r parent_ref_oid parent_ref; do
+                if [[ $ref == "$parent_ref" && $oid == "$parent_ref_oid" ]]; then
+                    mirrored=true
+                    break
+                fi
+            done <<<"$parent_refs"
+            [[ $mirrored == true ]] || echo "$ref"
+        done)
+        if [[ -n $extra_refs ]]; then
+            echo "slopmux-rm: agent '$name' has additional refs not mirrored in the parent:" >&2
+            printf '%s\n' "$extra_refs" >&2
+            result=1
+            continue
+        fi
+    fi
+
+    if [[ $delete_branch == true ]]; then
+        if [[ $force == true ]]; then
+            if parent_oid=$(git -C "$SLOPMUX_PARENT" show-ref --verify \
+                --hash "$expected_ref"); then
+                :
+            else
+                parent_status=$?
+                if (( parent_status != 1 )); then
+                    echo "slopmux-rm: could not inspect parent branch for agent '$name'" >&2
+                    result=1
+                    continue
+                fi
+            fi
+        fi
+        if [[ -n $parent_oid ]]; then
+            parent_worktrees=$(git -C "$SLOPMUX_PARENT" worktree list \
+                --porcelain)
+            branch_checked_out=false
+            while IFS= read -r worktree_line; do
+                if [[ $worktree_line == "branch $expected_ref" ]]; then
+                    branch_checked_out=true
+                    break
+                fi
+            done <<<"$parent_worktrees"
+            if [[ $branch_checked_out == true ]]; then
+                echo "slopmux-rm: cannot delete parent branch checked out in a worktree: '$branch'" >&2
+                result=1
+                continue
+            fi
+            if ! git -C "$SLOPMUX_PARENT" update-ref -d "$expected_ref" \
+                "$parent_oid"; then
+                echo "slopmux-rm: parent branch changed while removing agent '$name'" >&2
+                result=1
+                continue
+            fi
         fi
     fi
 

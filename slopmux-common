@@ -79,8 +79,8 @@ slopmux_write_record() {
     mv -- "$temporary" "$final"
 }
 
-slopmux_checkout_has_branch() {
-    local checkout=$1 branch=$2 top git_dir
+slopmux_checkout_is_repository() {
+    local checkout=$1 top git_dir
 
     [[ -d "$checkout" && -d "$checkout/.git" ]] || return 1
     top=$(git -C "$checkout" rev-parse --show-toplevel 2>/dev/null) || return 1
@@ -88,6 +88,12 @@ slopmux_checkout_has_branch() {
         return 1
     [[ "$(cd "$top" && pwd -P)" == "$checkout" ]] || return 1
     [[ "$(cd "$git_dir" && pwd -P)" == "$checkout/.git" ]] || return 1
+}
+
+slopmux_checkout_has_branch() {
+    local checkout=$1 branch=$2
+
+    slopmux_checkout_is_repository "$checkout" || return 1
     git -C "$checkout" show-ref --verify --quiet "refs/heads/$branch"
 }
 

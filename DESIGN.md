@@ -53,15 +53,13 @@ failure leaves the valid checkout registered.
 Publication fetches exactly the assigned checkout branch into its matching
 parent branch. By default, Git permits creation and fast-forwards while
 refusing divergence and checked-out destinations. `slopmux-sync --force`
-allows non-fast-forward updates; creation and removal still publish without
-force.
+allows non-fast-forward updates; creation publishes without force, while
+removal never publishes.
 
-Removal requires a valid repository on its assigned branch, a clean working
-tree, no extra refs absent or divergent in the parent, a caller outside the
-checkout, and a successful final publication. Ignored files and refs mirrored
-at the same name and object ID in the parent are disposable. The checkout is
-deleted before its record. `--delete-branch` uses the synchronized OID as the
-expected old value.
+Removal semantics and safety checks are documented in README. The registry
+entry is removed only after the checkout has been deleted successfully. Parent
+branch deletion refuses branches checked out in any worktree and uses the
+observed OID as the expected old value.
 
 ## Deliberate limits
 
