@@ -154,6 +154,9 @@ class SlopmuxIntegrationTests(unittest.TestCase):
         )
         self.git("update-ref", "-d", "refs/heads/local-only", cwd=foo)
 
+        self.git("tag", "mirrored", foo_oid)
+        self.git("update-ref", "refs/tags/mirrored", foo_oid, cwd=foo)
+
         (foo / ".git" / "info" / "exclude").write_text("ignored-output\n")
         (foo / "ignored-output").write_text("disposable\n")
 
@@ -301,6 +304,20 @@ class SlopmuxIntegrationTests(unittest.TestCase):
             self.assertTrue((self.parent / f".git/slopmux/agents/{name}").exists())
         for name in cases[:-1]:
             self.assertTrue(checkouts[name].exists())
+
+    def test_removal_refuses_divergent_parent_ref(self):
+        self.new("foo")
+        foo = self.checkout("foo")
+        child_oid = self.commit_file(foo, "child", "child\n")
+        self.git("tag", "same-name", cwd=self.parent)
+        self.git("update-ref", "refs/tags/same-name", child_oid, cwd=foo)
+
+        result = self.slopmux("rm", "foo")
+
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("refs/tags/same-name", result.stderr)
+        self.assertTrue(foo.exists())
+        self.assertTrue((self.parent / ".git/slopmux/agents/foo").exists())
 
     def test_removal_refuses_current_directory(self):
         self.new("foo")

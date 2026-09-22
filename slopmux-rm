@@ -66,10 +66,22 @@ for name in "${names[@]}"; do
         continue
     fi
     expected_ref=refs/heads/$branch
-    extra_refs=$(git -C "$checkout" for-each-ref --format='%(refname)' | \
-        while IFS= read -r ref; do [[ $ref == "$expected_ref" ]] || echo "$ref"; done)
+    parent_refs=$(git -C "$SLOPMUX_PARENT" for-each-ref \
+        --format='%(objectname) %(refname)')
+    extra_refs=$(git -C "$checkout" for-each-ref \
+        --format='%(objectname) %(refname)' | while read -r oid ref; do
+        [[ $ref == "$expected_ref" ]] && continue
+        mirrored=false
+        while read -r parent_oid parent_ref; do
+            if [[ $ref == "$parent_ref" && $oid == "$parent_oid" ]]; then
+                mirrored=true
+                break
+            fi
+        done <<<"$parent_refs"
+        [[ $mirrored == true ]] || echo "$ref"
+    done)
     if [[ -n $extra_refs ]]; then
-        echo "slopmux-rm: agent '$name' has additional refs:" >&2
+        echo "slopmux-rm: agent '$name' has additional refs not mirrored in the parent:" >&2
         printf '%s\n' "$extra_refs" >&2
         result=1
         continue

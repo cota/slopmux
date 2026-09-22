@@ -57,9 +57,11 @@ allows non-fast-forward updates; creation and removal still publish without
 force.
 
 Removal requires a valid repository on its assigned branch, a clean working
-tree, no extra refs, a caller outside the checkout, and a successful final
-publication. Ignored files are disposable. The checkout is deleted before its
-record. `--delete-branch` uses the synchronized OID as the expected old value.
+tree, no extra refs absent or divergent in the parent, a caller outside the
+checkout, and a successful final publication. Ignored files and refs mirrored
+at the same name and object ID in the parent are disposable. The checkout is
+deleted before its record. `--delete-branch` uses the synchronized OID as the
+expected old value.
 
 ## Deliberate limits
 

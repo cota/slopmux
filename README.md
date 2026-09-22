@@ -32,10 +32,11 @@ With no names, `slopmux-sync` synchronizes every registered agent, and
 `unpublished`, or `missing`. It never synchronizes anything.
 
 `slopmux-rm` performs a final synchronization before deleting a checkout. It
-refuses dirty checkouts, detached or unexpected HEADs, extra refs, missing
-repositories, and attempts made from inside the checkout. Ignored files are
-disposable. Use `-b` or `--delete-branch` to also delete the synchronized
-parent branch:
+refuses dirty checkouts, detached or unexpected HEADs, refs that are not
+identically mirrored in the parent, missing repositories, and attempts made
+from inside the checkout. Ignored files and refs with the same name and object
+ID in the parent are disposable. Use `-b` or `--delete-branch` to also delete
+the synchronized parent branch:
 
 ```sh
 slopmux-rm --delete-branch foo
