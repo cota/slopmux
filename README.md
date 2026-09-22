@@ -111,3 +111,46 @@ ln -s "$PWD/slopmux-new" "$PWD/slopmux-ls" "$PWD/slopmux-sync" \
 The commands resolve their shared helper through these symlinks, so leave the
 Slopmux checkout in place. Ensure `~/.local/bin` is in `PATH`. Use `-h` or
 `--help` with any command for usage.
+
+## Design
+
+### Invariants
+
+- A checkout owns its objects, refs, config, index, HEAD, and reflogs.
+- It has no alternates or persistent remote pointing to slopmux state.
+- The parent registry is authoritative; checkout metadata and root scans are
+  not used for discovery.
+- The checkout branch is authoritative. Its parent branch is only a published
+  copy, updated by fast-forward unless the user explicitly requests force, and
+  never updated while checked out.
+- Failed or interrupted operations prefer visible stale state over forgotten or
+  destroyed work.
+
+### State
+
+```text
+parent/.git/slopmux/
+├── version
+├── lock
+└── agents/<name>/{checkout,branch,tool}
+
+<checkoutRoot>/<parent-basename>/
+├── .slopmux-parent
+├── .slopmux-lock
+└── <agent>/.git/
+```
+
+The ownership file stores the parent's canonical path. A different live path
+is a basename collision and is refused; a missing old path is treated as a
+move. Copying a parent with active slopmux metadata is unsupported.
+
+Mutations hold the parent registry `flock`; creation also holds the basename
+lock. Records and ownership files are installed through temporary-file renames.
+Missing checkouts remain registered and visible.
+
+### Deliberate limits
+
+Version 1 has no object cache, alternates, automatic publication,
+linked-worktree migration, or special handling for LFS, submodules, shallow
+clones, and partial clones. These features are deferred to keep the design
+simple.
